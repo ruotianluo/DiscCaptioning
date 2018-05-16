@@ -88,9 +88,8 @@ def eval_split(model, loader, eval_kwargs={}):
     losses = {}
     loss_evals = 1e-8
     predictions = [] # Save the discriminative results. Used for further html visualization.
-    ix1 = loader.batch_size if num_images == -1 else num_images
     while True:
-        data = loader.get_batch(split, min(loader.batch_size, ix1-n))
+        data = loader.get_batch(split)
         n = n + loader.batch_size
 
         if data.get('labels', None) is not None:
@@ -139,8 +138,8 @@ def eval_split(model, loader, eval_kwargs={}):
         ix1 = data['bounds']['it_max']
         if num_images != -1:
             ix1 = min(ix1, num_images)
-        # for i in range(n - ix1):
-        #     predictions.pop()
+        for i in range(n - ix1):
+            predictions.pop()
 
         if verbose:
             print('evaluating validation preformance... %d/%d (%f)' %(ix0 - 1, ix1, loss))
