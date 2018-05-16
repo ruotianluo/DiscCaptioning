@@ -52,8 +52,10 @@ def get_self_critical_reward(data, gen_result, greedy_res):
     print('Cider scores:', _)
     scores = cider_scores
 
+    cider_greedy = scores[batch_size:].mean()
+    
     scores = scores[:batch_size] - scores[batch_size:]
 
     # rewards = np.repeat(scores[:, np.newaxis], gen_result.shape[1], 1)
 
-    return scores
+    return scores, cider_greedy

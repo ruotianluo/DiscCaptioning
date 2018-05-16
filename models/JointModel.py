@@ -111,8 +111,9 @@ class JointModel(nn.Module):
                 gen_masks = torch.cat([Variable(gen_result.data.new(gen_result.size(0), 2).fill_(1).float()), (gen_result > 0).float()[:, :-1]], 1)
             if 'greedy_res' not in locals():
                 greedy_res, _ =  self.caption_generator.sample(*utils.var_wrapper([fc_feats, att_feats, att_masks], volatile=True), opt={'sample_max':1})
-            reward = rewards.get_self_critical_reward(data, gen_result, greedy_res)
+            reward, cider_greedy = rewards.get_self_critical_reward(data, gen_result, greedy_res)
             self._loss['avg_reward'] = reward.mean()
+            self._loss['cider_greedy'] = cider_greedy
             loss_cap = sample_logprobs * utils.var_wrapper(-reward.astype('float32')).unsqueeze(1) * (gen_masks[:, 1:].detach())
             loss_cap = loss_cap.sum() / gen_masks[:, 1:].data.float().sum()
 
