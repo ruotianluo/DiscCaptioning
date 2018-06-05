@@ -1,0 +1,4 @@
+[submodule "cider"]
+	path = cider
+	url = https://github.com/ruotianluo/cider.git
+	branch = 109eb4070b5e907a5db6ef2026a6347275f56381
