@@ -18,24 +18,23 @@ import models
 from dataloader import *
 import eval_utils
 import misc.utils as utils
+import copy
+from misc.rewards import init_scorer
 
 try:
     import tensorflow as tf
+    from tensorboardX import SummaryWriter
 except ImportError:
     print("Tensorflow not installed; No tensorboard logging.")
     tf = None
 
-def add_summary_value(writer, key, value, iteration):
-    summary = tf.Summary(value=[tf.Summary.Value(tag=key, simple_value=value)])
-    writer.add_summary(summary, iteration)
-
 def train(opt):
-    opt.use_att = utils.if_use_att(opt.caption_model)
+    opt.use_att = utils.if_use_att(opt)
     loader = DataLoader(opt)
     opt.vocab_size = loader.vocab_size
     opt.seq_length = loader.seq_length
 
-    tf_summary_writer = tf and tf.summary.FileWriter(opt.checkpoint_path)
+    tf_summary_writer = tf and SummaryWriter(opt.checkpoint_path)
 
     infos = {}
     histories = {}
@@ -64,22 +63,26 @@ def train(opt):
     loader.split_ix = infos.get('split_ix', loader.split_ix)
     if opt.load_best_score == 1:
         best_val_score = infos.get('best_val_score', None)
+        best_val_score_vse = infos.get('best_val_score_vse', None)
 
-    model = models.setup(opt)
+    model = models.JointModel(opt)
     model.cuda()
 
     update_lr_flag = True
     # Assure in training mode
     model.train()
 
-    crit = utils.LanguageModelCriterion()
-
-    optimizer = optim.Adam(model.parameters(), lr=opt.learning_rate, weight_decay=opt.weight_decay)
+    optimizer = optim.Adam([p for p in model.parameters() if p.requires_grad], lr=opt.learning_rate, weight_decay=opt.weight_decay)
 
     # Load the optimizer
-    if vars(opt).get('start_from', None) is not None:
-        optimizer.load_state_dict(torch.load(os.path.join(opt.start_from, 'optimizer.pth')))
+    if vars(opt).get('start_from', None) is not None and os.path.isfile(os.path.join(opt.start_from, 'optimizer.pth')):
+        state_dict = torch.load(os.path.join(opt.start_from, 'optimizer.pth'))
+        if len(state_dict['state']) == len(optimizer.state_dict()['state']):
+            optimizer.load_state_dict(state_dict)
+        else:
+            print('Optimizer param group number not matched? There must be new parameters. Reinit the optimizer.')
 
+    init_scorer(opt.cached_tokens)
     while True:
         if update_lr_flag:
                 # Assign the learning rate
@@ -94,7 +97,11 @@ def train(opt):
             if epoch > opt.scheduled_sampling_start and opt.scheduled_sampling_start >= 0:
                 frac = (epoch - opt.scheduled_sampling_start) // opt.scheduled_sampling_increase_every
                 opt.ss_prob = min(opt.scheduled_sampling_increase_prob  * frac, opt.scheduled_sampling_max_prob)
-                model.ss_prob = opt.ss_prob
+                model.caption_generator.ss_prob = opt.ss_prob
+            # Assign retrieval loss weight
+            if epoch > opt.retrieval_reward_weight_decay_start and opt.retrieval_reward_weight_decay_start >= 0:
+                frac = (epoch - opt.retrieval_reward_weight_decay_start) // opt.retrieval_reward_weight_decay_every
+                model.retrieval_reward_weight = opt.retrieval_reward_weight * (opt.retrieval_reward_weight_decay_rate  ** frac)
             update_lr_flag = False
                 
         start = time.time()
@@ -105,12 +112,13 @@ def train(opt):
         torch.cuda.synchronize()
         start = time.time()
 
-        tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks']]
-        tmp = [Variable(torch.from_numpy(_), requires_grad=False).cuda() for _ in tmp]
-        fc_feats, att_feats, labels, masks = tmp
+        tmp = [data['fc_feats'], data['att_feats'], data['att_masks'], data['labels'], data['masks']]
+        tmp = utils.var_wrapper(tmp)
+        fc_feats, att_feats, att_masks, labels, masks = tmp
         
         optimizer.zero_grad()
-        loss = crit(model(fc_feats, att_feats, labels), labels[:,1:], masks[:,1:])
+        
+        loss = model(fc_feats, att_feats, att_masks, labels, masks, data)
         loss.backward()
         utils.clip_gradient(optimizer, opt.grad_clip)
         optimizer.step()
@@ -119,6 +127,10 @@ def train(opt):
         end = time.time()
         print("iter {} (epoch {}), train_loss = {:.3f}, time/batch = {:.3f}" \
             .format(iteration, epoch, train_loss, end - start))
+        prt_str = ""
+        for k, v in model.loss().items():
+            prt_str += "{} = {:.3f} ".format(k, v)
+        print(prt_str)
 
         # Update the iteration and epoch
         iteration += 1
@@ -129,14 +141,17 @@ def train(opt):
         # Write the training loss summary
         if (iteration % opt.losses_log_every == 0):
             if tf is not None:
-                add_summary_value(tf_summary_writer, 'train_loss', train_loss, iteration)
-                add_summary_value(tf_summary_writer, 'learning_rate', opt.current_lr, iteration)
-                add_summary_value(tf_summary_writer, 'scheduled_sampling_prob', model.ss_prob, iteration)
-                tf_summary_writer.flush()
+                tf_summary_writer.add_scalar('train_loss', train_loss, iteration)
+                for k,v in model.loss().items():
+                    tf_summary_writer.add_scalar(k, v, iteration)
+                tf_summary_writer.add_scalar('learning_rate', opt.current_lr, iteration)
+                tf_summary_writer.add_scalar('scheduled_sampling_prob', model.caption_generator.ss_prob, iteration)
+                tf_summary_writer.add_scalar('retrieval_reward_weight', model.retrieval_reward_weight, iteration)
+                tf_summary_writer.file_writer.flush()
 
             loss_history[iteration] = train_loss
             lr_history[iteration] = opt.current_lr
-            ss_prob_history[iteration] = model.ss_prob
+            ss_prob_history[iteration] = model.caption_generator.ss_prob
 
         # make evaluation on validation set, and save model
         if (iteration % opt.save_checkpoint_every == 0):
@@ -144,28 +159,50 @@ def train(opt):
             eval_kwargs = {'split': 'val',
                             'dataset': opt.input_json}
             eval_kwargs.update(vars(opt))
-            val_loss, predictions, lang_stats = eval_utils.eval_split(model, crit, loader, eval_kwargs)
+            # Load the retrieval model for evaluation
+            if opt.evaluation_retrieval:
+                model.vse2 = copy.deepcopy(model.vse)
+                model.vse2.load_state_dict({k[4:]:v for k,v in torch.load(opt.evaluation_retrieval).items() if 'vse.' in k})
+                model.vse2.cuda()
+            else:
+                model.vse2 = model.vse
+            val_loss, predictions, lang_stats = eval_utils.eval_split(model, loader, eval_kwargs)
+            if opt.evaluation_retrieval:
+                del model.vse2
 
             # Write validation result into summary
             if tf is not None:
-                add_summary_value(tf_summary_writer, 'validation loss', val_loss, iteration)
+                for k,v in val_loss.items():
+                    tf_summary_writer.add_scalar('validation '+k, v, iteration)
                 for k,v in lang_stats.items():
-                    add_summary_value(tf_summary_writer, k, v, iteration)
-                tf_summary_writer.flush()
+                    tf_summary_writer.add_scalar(k, v, iteration)
+                tf_summary_writer.add_text('Captions', '.\n\n'.join([_['caption'] for _ in predictions[:100]]), iteration)
+                #tf_summary_writer.add_image('images', utils.make_summary_image(), iteration)
+                #utils.make_html(opt.id, iteration)
+                tf_summary_writer.file_writer.flush()
+
             val_result_history[iteration] = {'loss': val_loss, 'lang_stats': lang_stats, 'predictions': predictions}
 
             # Save model if is improving on validation result
             if opt.language_eval == 1:
-                current_score = lang_stats['CIDEr']
+                current_score = lang_stats['SPICE']*100
             else:
-                current_score = - val_loss
+                current_score = - val_loss['loss_cap']
+            current_score_vse = val_loss.get(opt.vse_eval_criterion, 0)*100
 
             best_flag = False
+            best_flag_vse = False
             if True: # if true
                 if best_val_score is None or current_score > best_val_score:
                     best_val_score = current_score
                     best_flag = True
+                if best_val_score_vse is None or current_score_vse > best_val_score_vse:
+                    best_val_score_vse = current_score_vse
+                    best_flag_vse = True
                 checkpoint_path = os.path.join(opt.checkpoint_path, 'model.pth')
+                torch.save(model.state_dict(), checkpoint_path)
+                print("model saved to {}".format(checkpoint_path))
+                checkpoint_path = os.path.join(opt.checkpoint_path, 'model-%d.pth'%(iteration))
                 torch.save(model.state_dict(), checkpoint_path)
                 print("model saved to {}".format(checkpoint_path))
                 optimizer_path = os.path.join(opt.checkpoint_path, 'optimizer.pth')
@@ -177,6 +214,7 @@ def train(opt):
                 infos['iterators'] = loader.iterators
                 infos['split_ix'] = loader.split_ix
                 infos['best_val_score'] = best_val_score
+                infos['best_val_score_vse'] = best_val_score_vse
                 infos['opt'] = opt
                 infos['vocab'] = loader.get_vocab()
 
@@ -186,6 +224,8 @@ def train(opt):
                 histories['ss_prob_history'] = ss_prob_history
                 with open(os.path.join(opt.checkpoint_path, 'infos_'+opt.id+'.pkl'), 'wb') as f:
                     cPickle.dump(infos, f)
+                with open(os.path.join(opt.checkpoint_path, 'infos_'+opt.id+'-%d.pkl'%(iteration)), 'wb') as f:
+                    cPickle.dump(infos, f)
                 with open(os.path.join(opt.checkpoint_path, 'histories_'+opt.id+'.pkl'), 'wb') as f:
                     cPickle.dump(histories, f)
 
@@ -194,6 +234,12 @@ def train(opt):
                     torch.save(model.state_dict(), checkpoint_path)
                     print("model saved to {}".format(checkpoint_path))
                     with open(os.path.join(opt.checkpoint_path, 'infos_'+opt.id+'-best.pkl'), 'wb') as f:
+                        cPickle.dump(infos, f)
+                if best_flag_vse:
+                    checkpoint_path = os.path.join(opt.checkpoint_path, 'model_vse-best.pth')
+                    torch.save(model.state_dict(), checkpoint_path)
+                    print("model saved to {}".format(checkpoint_path))
+                    with open(os.path.join(opt.checkpoint_path, 'infos_vse_'+opt.id+'-best.pkl'), 'wb') as f:
                         cPickle.dump(infos, f)
 
         # Stop if reaching max epochs

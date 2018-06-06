@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import *
 import misc.utils as utils
+import numpy as np
 
 class LSTMCore(nn.Module):
     def __init__(self, opt):
@@ -57,10 +58,16 @@ class FCModel(nn.Module):
 
         self.img_embed = nn.Linear(self.fc_feat_size, self.input_encoding_size)
         self.core = LSTMCore(opt)
-        self.embed = nn.Embedding(self.vocab_size + 1, self.input_encoding_size)
+        self.embed = nn.Embedding(self.vocab_size + 2, self.input_encoding_size)
         self.logit = nn.Linear(self.rnn_size, self.vocab_size + 1)
 
+        self.crit = utils.LanguageModelCriterion()
+
         self.init_weights()
+
+        self.decoding_constraint = getattr(opt, 'decoding_constraint', 0)
+
+        self._loss = {}
 
     def init_weights(self):
         initrange = 0.1
@@ -76,7 +83,8 @@ class FCModel(nn.Module):
         else:
             return Variable(weight.new(self.num_layers, bsz, self.rnn_size).zero_())
 
-    def forward(self, fc_feats, att_feats, seq):
+    def forward(self, fc_feats, att_feats, att_masks, seq, masks):
+
         batch_size = fc_feats.size(0)
         state = self.init_hidden(batch_size)
         outputs = []
@@ -85,7 +93,7 @@ class FCModel(nn.Module):
             if i == 0:
                 xt = self.img_embed(fc_feats)
             else:
-                if i >= 2 and self.ss_prob > 0.0: # otherwiste no need to sample
+                if self.training and i >= 2 and self.ss_prob > 0.0: # otherwiste no need to sample
                     sample_prob = fc_feats.data.new(batch_size).uniform_(0, 1)
                     sample_mask = sample_prob < self.ss_prob
                     if sample_mask.sum() == 0:
@@ -109,10 +117,17 @@ class FCModel(nn.Module):
             output = F.log_softmax(self.logit(output))
             outputs.append(output)
 
-        return torch.cat([_.unsqueeze(1) for _ in outputs[1:]], 1).contiguous()
+        output = torch.cat([_.unsqueeze(1) for _ in outputs[1:]], 1).contiguous()
+        loss = self.crit(output, seq[:,1:], masks[:,1:])
 
-    def sample_beam(self, fc_feats, att_feats, opt={}):
+        self._loss['xe'] = loss.data[0]
+
+        return loss
+
+    def sample_beam(self, fc_feats, att_feats, att_masks, opt={}):
+
         beam_size = opt.get('beam_size', 10)
+        decoding_constraint = opt.get('decoding_constraint', self.decoding_constraint)
         batch_size = fc_feats.size(0)
 
         assert beam_size <= self.vocab_size + 1, 'lets assume this for now, otherwise this corner case causes a few headaches down the road. can be dealt with in future if needed'
@@ -129,16 +144,21 @@ class FCModel(nn.Module):
             beam_logprobs_sum = torch.zeros(beam_size) # running sum of logprobs for each beam
             for t in range(self.seq_length + 2):
                 if t == 0:
-                    xt = self.img_embed(fc_feats[k:k+1]).expand(beam_size, self.input_encoding_size)
+                    xt = self.new_img_embed(fc_feats[k:k+1], fc_feats_d.chunk(batch_size)[k]).expand(beam_size, self.input_encoding_size)
                 elif t == 1: # input <bos>
-                    it = fc_feats.data.new(beam_size).long().zero_()
+                    it = fc_feats.data.new(beam_size).long().fill_(self.vocab_size + 1)
                     xt = self.embed(Variable(it, requires_grad=False))
                 else:
                     """perform a beam merge. that is,
                     for every previous beam we now many new possibilities to branch out
                     we need to resort our beams to maintain the loop invariant of keeping
                     the top beam_size most likely sequences."""
-                    logprobsf = logprobs.float() # lets go to CPU for more efficiency in indexing operations
+                    logprobsf = logprobs.float().cpu() # lets go to CPU for more efficiency in indexing operations
+                    if decoding_constraint and t > 2:
+                        tmp = logprobsf.data.new(logprobsf.size()).zero_()
+                        tmp.scatter_(1, beam_seq[t-3:t-2].t(), -np.inf)
+                        logprobsf = logprobsf + Variable(tmp)
+
                     ys,ix = torch.sort(logprobsf,1,True) # sorted array of logprobs along each previous beam (last true = descending)
                     candidates = []
                     cols = min(beam_size, ys.size(1))
@@ -198,14 +218,16 @@ class FCModel(nn.Module):
             seq[:, k] = self.done_beams[k][0]['seq'] # the first beam has highest cumulative score
             seqLogprobs[:, k] = self.done_beams[k][0]['logps']
         # return the samples and their log likelihoods
-        return seq.transpose(0, 1), seqLogprobs.transpose(0, 1)
+        return Variable(seq.transpose(0, 1)), Variable(seqLogprobs.transpose(0, 1))
 
-    def sample(self, fc_feats, att_feats, opt={}):
+    def sample(self, fc_feats, att_feats, att_masks, opt={}):
+
         sample_max = opt.get('sample_max', 1)
         beam_size = opt.get('beam_size', 1)
         temperature = opt.get('temperature', 1.0)
+        decoding_constraint = opt.get('decoding_constraint', self.decoding_constraint)
         if beam_size > 1:
-            return self.sample_beam(fc_feats, att_feats, opt)
+            return self.sample_beam(fc_feats, att_feats, att_masks, opt)
 
         batch_size = fc_feats.size(0)
         state = self.init_hidden(batch_size)
@@ -216,21 +238,27 @@ class FCModel(nn.Module):
                 xt = self.img_embed(fc_feats)
             else:
                 if t == 1: # input <bos>
-                    it = fc_feats.data.new(batch_size).long().zero_()
-                elif sample_max:
-                    sampleLogprobs, it = torch.max(logprobs.data, 1)
+                    it = Variable(fc_feats.data.new(batch_size).long().fill_(self.vocab_size + 1))
+                elif sample_max == 1:
+                    sampleLogprobs, it = torch.max(logprobs, 1)
                     it = it.view(-1).long()
+                elif sample_max == 2: #gumbel:
+                    noise = fc_feats.data.new(logprobs.size()).uniform_()
+                    noise.add_(1e-9).log_().neg_()
+                    noise.add_(1e-9).log_().neg_()
+                    logprobs = (logprobs + Variable(noise)) / temperature
+                    sampleLogprobs, it = torch.max(logprobs, 1)
                 else:
                     if temperature == 1.0:
-                        prob_prev = torch.exp(logprobs.data).cpu() # fetch prev distribution: shape Nx(M+1)
+                        prob_prev = torch.exp(logprobs) # fetch prev distribution: shape Nx(M+1)
                     else:
                         # scale logprobs by temperature
-                        prob_prev = torch.exp(torch.div(logprobs.data, temperature)).cpu()
-                    it = torch.multinomial(prob_prev, 1).cuda()
-                    sampleLogprobs = logprobs.gather(1, Variable(it, requires_grad=False)) # gather the logprobs at sampled positions
+                        prob_prev = torch.exp(torch.div(logprobs, temperature))
+                    it = torch.multinomial(prob_prev, 1).detach()
+                    sampleLogprobs = logprobs.gather(1, it) # gather the logprobs at sampled positions
                     it = it.view(-1).long() # and flatten indices for downstream processing
 
-                xt = self.embed(Variable(it, requires_grad=False))
+                xt = self.embed(it)
 
             if t >= 2:
                 # stop when all finished
@@ -238,14 +266,20 @@ class FCModel(nn.Module):
                     unfinished = it > 0
                 else:
                     unfinished = unfinished * (it > 0)
-                if unfinished.sum() == 0:
+                if unfinished.data.sum() == 0:
                     break
                 it = it * unfinished.type_as(it)
                 seq.append(it) #seq[t] the input of t+2 time step
                 seqLogprobs.append(sampleLogprobs.view(-1))
 
             output, state = self.core(xt, state)
-            logprobs = F.log_softmax(self.logit(output))
+
+            if decoding_constraint and len(seq) > 0:
+                tmp = output.data.new(output.size(0), self.vocab_size + 1).zero_()
+                tmp.scatter_(1, seq[-1].data.unsqueeze(1), -np.inf)
+                logprobs = F.log_softmax(self.logit(output)+Variable(tmp))
+            else:
+                logprobs = F.log_softmax(self.logit(output))
 
         return torch.cat([_.unsqueeze(1) for _ in seq], 1), torch.cat([_.unsqueeze(1) for _ in seqLogprobs], 1)
 

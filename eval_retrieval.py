@@ -1,3 +1,12 @@
+"""
+Evaluate on a collection
+large seq_per_img 
+batch size is 1
+closest.pkl contrains non-distractor
+distractor_proportion is 1.
+Print the vote from distractor_mlp
+"""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -13,10 +22,11 @@ import opts
 import models
 from dataloader import *
 from dataloaderraw import *
-import eval_utils
 import argparse
 import misc.utils as utils
 import torch
+import torch.nn as nn
+import eval_utils
 
 # Input arguments and options
 parser = argparse.ArgumentParser()
@@ -70,20 +80,45 @@ parser.add_argument('--coco_json', type=str, default='',
 parser.add_argument('--id', type=str, default='', 
                 help='an id identifying this run/job. used only if language_eval = 1 for appending to intermediate files')
 
-parser.add_argument('--seq_per_img', type=int, default=1, 
+parser.add_argument('--seq_per_img', type=int, default=5, 
                 help='')
-parser.add_argument('--closest_num', type=int, default=1, 
+parser.add_argument('--closest_num', type=int, default=5, 
                 help='')
-parser.add_argument('--closest_file', type=str, default='data/closest.pkl',
+parser.add_argument('--closest_file', type=str, default='data/collections.pkl',
                 help='Closest_file')
 
 parser.add_argument('--decoding_constraint', type=int, default=0,
                 help='1 if not allowing decoding two same words in a row')
 
+parser.add_argument('--initialize_retrieval', type=str, default=None,
+                help="""xxxx.pth""")
+
 # vse
 parser.add_argument('--vse_model', type=str, default=None,
                 help='fc, None')
+parser.add_argument('--vse_rnn_type', type=str, default=None,
+                help='rnn, gru, or lstm')
+parser.add_argument('--vse_margin', default=None, type=float,
+                help='Rank loss margin; when margin is -1, it means use binary cross entropy (usually works with MLP).')
+parser.add_argument('--vse_embed_size', default=None, type=int,
+                help='Dimensionality of the joint embedding.')
+parser.add_argument('--vse_num_layers', default=None, type=int,
+                help='Number of GRU layers.')
+parser.add_argument('--vse_max_violation', default=None, type=int,
+                help='Use max instead of sum in the rank loss.')
+parser.add_argument('--vse_measure', default='cosine',
+                help='Similarity measure used (cosine|order|MLP)')
+parser.add_argument('--vse_use_abs', default=None, type=int,
+                help='Take the absolute value of embedding vectors.')
+parser.add_argument('--vse_no_imgnorm', default=None, type=int,
+                help='Do not normalize the image embeddings.')
+parser.add_argument('--vse_loss_type', default=None, type=str,
+                help='contrastive or pair')
+parser.add_argument('--vse_pool_type', default=None, type=str,
+                help='last, mean, max')
 
+parser.add_argument('--fold5', default=0, type=int,
+                help='fold5')
 
 opt = parser.parse_args()
 
@@ -104,29 +139,28 @@ if opt.batch_size == 0:
     opt.batch_size = infos['opt'].batch_size
 if len(opt.id) == 0:
     opt.id = infos['opt'].id
-# if opt.initialize_retrieval == None:
-#     opt.initialize_retrieval = infos['opt'].initialize_retrieval
-ignore = ["id", "batch_size", "beam_size", "start_from", "language_eval","initialize_retrieval",'decoding_constraint','evaluation_retrieval',
+ignore = ["id", "batch_size", "beam_size", "start_from", "language_eval",
           "input_fc_dir", "input_att_dir", "input_label_h5", 'seq_per_img', 'closest_num', 'closest_file']
 for k in vars(infos['opt']).keys():
     if k not in ignore:
         if k in vars(opt) and getattr(opt, k) is not None:
-            assert vars(opt)[k] == vars(infos['opt'])[k], k + ' option not consistent:' + str(vars(opt)[k])+' '+ str(vars(infos['opt'])[k])
+            assert vars(opt)[k] == vars(infos['opt'])[k], k + ' option not consistent'
         else:
             vars(opt).update({k: vars(infos['opt'])[k]}) # copy over options from model
 
 vocab = infos['vocab'] # ix -> word mapping
 
-assert opt.closest_num == opt.seq_per_img
+assert opt.seq_per_img == 5
+
 opt.vse_loss_weight = vars(opt).get('vse_loss_weight', 1)
 opt.caption_loss_weight = vars(opt).get('caption_loss_weight', 1)
-
-opt.cider_optimization = 0
 
 # Setup the model
 model = models.JointModel(opt)
 utils.load_state_dict(model, torch.load(opt.model))
-
+if opt.initialize_retrieval is not None:
+    print("Make sure the vse opt are the same !!!!!\n"*100)
+    utils.load_state_dict(model, {k:v for k,v in torch.load(opt.initialize_retrieval).items() if 'vse' in k})
 model.cuda()
 model.eval()
 
@@ -140,15 +174,10 @@ else:
                             'cnn_model': opt.cnn_model})
   loader.ix_to_word = infos['vocab']
 
+opt.id = opt.id + '_retrieval'
 
-# Set sample options
-loss, split_predictions, lang_stats = eval_utils.eval_split(model, loader, 
-    vars(opt))
+result = eval_utils.evalrank(model, loader, vars(opt))
 
-print('loss: ', loss)
-if lang_stats:
-  print(lang_stats)
+json.dump(result, open('eval_results/'+opt.id+'_retreival_results.json', 'w'))
 
-if opt.dump_json == 1:
-    # dump the json
-    json.dump(split_predictions, open('vis/vis.json', 'w'))
+

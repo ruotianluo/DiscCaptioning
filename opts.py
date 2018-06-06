@@ -18,6 +18,14 @@ def parse_opt():
                                               Note: this file contains absolute paths, be careful when moving files around;
                         'model.ckpt-*'      : file(s) with model definition (created by tf)
                     """)
+    parser.add_argument('--initialize_retrieval', type=str, default=None,
+                    help="""xxxx.pth""")
+
+    parser.add_argument('--cached_tokens', type=str, default='coco-train-idxs',
+                    help='Cached token file for calculating cider score during self critical training.')
+    parser.add_argument('--cider_optimization', type=int, default=0,
+                    help='optimize cider?')
+
 
     # Model settings
     parser.add_argument('--caption_model', type=str, default="show_tell",
@@ -37,6 +45,13 @@ def parse_opt():
     parser.add_argument('--att_feat_size', type=int, default=2048,
                     help='2048 for resnet, 512 for vgg')
 
+
+    parser.add_argument('--use_bn', type=int, default=0,
+                    help='If 1, then do batch_normalization first in att_embed')
+
+    parser.add_argument('--decoding_constraint', type=int, default=0,
+                    help='1 if not allowing decoding two same words in a row, 2 if not allowing any word appear twice in a caption')
+
     # Optimization: General
     parser.add_argument('--max_epochs', type=int, default=-1,
                     help='number of epochs')
@@ -46,7 +61,7 @@ def parse_opt():
                     help='clip gradients at this value')
     parser.add_argument('--drop_prob_lm', type=float, default=0.5,
                     help='strength of dropout in the Language Model RNN')
-    parser.add_argument('--seq_per_img', type=int, default=5,
+    parser.add_argument('--seq_per_img', type=int, default=1,
                     help='number of captions to sample for each image during training. Done for efficiency since CNN forward pass is expensive. E.g. coco has 5 sents/image')
     parser.add_argument('--beam_size', type=int, default=1,
                     help='used when sample_max = 1, indicates number of beams in beam search. Usually 2 or 3 works well. More is not better. Set this to 1 for faster runtime but a bit worse performance.')
@@ -81,6 +96,21 @@ def parse_opt():
                     help='Maximum scheduled sampling prob.')
 
 
+    parser.add_argument('--retrieval_reward_weight_decay_start', type=int, default=-1, 
+                    help='at what iteration to start decaying learning rate? (-1 = dont) (in epoch)')
+    parser.add_argument('--retrieval_reward_weight_decay_every', type=int, default=15, 
+                    help='every how many iterations thereafter to drop LR?(in epoch)')
+    parser.add_argument('--retrieval_reward_weight_decay_rate', type=float, default=0.8, 
+                    help='every how many iterations thereafter to drop LR?(in epoch)')
+
+
+    parser.add_argument('--gate_type', type=str, default='softmax',
+                    help='sigmoid or softmax.')
+    parser.add_argument('--closest_num', type=int, default=10,
+                    help='sigmoid or softmax.')
+    parser.add_argument('--closest_file', type=str, default='data/closest.pkl',
+                    help='Closest_file')
+
     # Evaluation/Checkpointing
     parser.add_argument('--val_images_use', type=int, default=3200,
                     help='how many images to use when periodically evaluating the validation loss? (-1 = all)')
@@ -90,6 +120,8 @@ def parse_opt():
                     help='directory to store checkpointed models')
     parser.add_argument('--language_eval', type=int, default=0,
                     help='Evaluate language as well (1 = yes, 0 = no)? BLEU/CIDEr/METEOR/ROUGE_L? requires coco-caption code from Github.')
+    parser.add_argument('--rank_eval', type=int, default=0,
+                    help='Evaluate vse rank')
     parser.add_argument('--losses_log_every', type=int, default=25,
                     help='How often do we snapshot losses, for inclusion in the progress dump? (0 = disable)')       
     parser.add_argument('--load_best_score', type=int, default=1,
@@ -100,6 +132,54 @@ def parse_opt():
                     help='an id identifying this run/job. used in cross-val and appended when writing progress files')
     parser.add_argument('--train_only', type=int, default=0,
                     help='if true then use 80k, else use 110k')
+
+    # vse
+    parser.add_argument('--vse_model', type=str, default="None",
+                    help='fc, None')
+    parser.add_argument('--vse_rnn_type', type=str, default='gru',
+                    help='rnn, gru, or lstm')
+    parser.add_argument('--vse_margin', default=0.2, type=float,
+                    help='Rank loss margin; when margin is -1, it means use binary cross entropy (usually works with MLP).')
+    parser.add_argument('--vse_embed_size', default=1024, type=int,
+                    help='Dimensionality of the joint embedding.')
+    parser.add_argument('--vse_num_layers', default=1, type=int,
+                    help='Number of GRU layers.')
+    parser.add_argument('--vse_max_violation', default=1, type=int,
+                    help='Use max instead of sum in the rank loss.')
+    parser.add_argument('--vse_measure', default='cosine',
+                    help='Similarity measure used (cosine|order|MLP)')
+    parser.add_argument('--vse_use_abs', default=0, type=int,
+                    help='Take the absolute value of embedding vectors.')
+    parser.add_argument('--vse_no_imgnorm', default=0, type=int,
+                    help='Do not normalize the image embeddings.')
+    parser.add_argument('--vse_loss_type', default='contrastive', type=str,
+                    help='contrastive or pair')
+    parser.add_argument('--vse_pool_type', default='last', type=str,
+                    help='last, mean, max')
+
+    # retrieval_reward
+    parser.add_argument('--retrieval_reward', default='gumbel', type=str,
+                    help='gumbel, reinforce, prob')
+    parser.add_argument('--retrieval_reward_weight', default=0, type=float,
+                    help='gumbel, reinforce')
+    parser.add_argument('--only_one_retrieval', default='off', type=str,
+                    help='image, caption, only used when optimizing generator')
+
+    parser.add_argument('--share_embed', default=0, type=int,
+                    help='Share embed')
+    parser.add_argument('--share_fc', default=0, type=int,
+                    help='Share fc')
+    parser.add_argument('--caption_loss_weight', default=1, type=float,
+                    help='Loss weight.')
+    parser.add_argument('--vse_loss_weight', default=0, type=float,
+                    help='Loss weight.')
+
+    parser.add_argument('--vse_eval_criterion', default='rsum', type=str,
+                    help="The criterion to decide which to take: rsum, t2i_ar, i2t_ar, ....")
+
+    parser.add_argument('--reinforce_baseline_type', default='greedy', type=str,
+                    help="no, greedy, gt")
+
 
     args = parser.parse_args()
 
