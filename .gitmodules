@@ -2,3 +2,6 @@
 	path = cider
 	url = https://github.com/ruotianluo/cider.git
 	branch = 109eb4070b5e907a5db6ef2026a6347275f56381
+[submodule "coco-caption"]
+	path = coco-caption
+	url = https://github.com/peteanderson80/coco-caption.git
