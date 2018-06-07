@@ -7,6 +7,7 @@ This is the implementation of paper [**Discriminability objective for training d
 Python 2.7 (because there is no [coco-caption](https://github.com/tylin/coco-caption) version for python 3)
 
 PyTorch 0.3 (along with torchvision)
+
 java 1.8 for (coco-caption)
 
 ## Downloads
@@ -34,7 +35,7 @@ cd ../../
 
 ```
 
-The reason why we need to replace the `captions_val2014.json` is because the original file can only evaluates images from the val2014 set, and we are using 
+The reason why we need to replace the `captions_val2014.json` is because the original file can only evaluate images from the val2014 set, and we are using rama's split.
 
 ### Pre-computed feature
 
@@ -42,20 +43,26 @@ In this paper, for retrieval model, we use outputs of last layer of resnet-101. 
 
 The features can be downloaded from the same link, and you need to compress them to `data/cocotalk_fc` and `data/cocobu_att` respectively.
 
-## Pretrained model and result from paper.
+## Pretrained models.
 
-Download pretrained models from [link](https://drive.google.com/open?id=1_-OpcVmiZ8D4OJH76D0J1l8WXZH-HQmR). Decompress them into current folder.
+Download pretrained models from [link](https://drive.google.com/open?id=1_-OpcVmiZ8D4OJH76D0J1l8WXZH-HQmR). Decompress them into root folder.
 
-To run evaluation on pretrained model:
+To evaluate on pretrained model, run:
 
 `bash eval.sh att_d1 test`
 
+The pretrained models can match the results shown in the paper.
+
 ## Train on you rown
 
-### Preprocessing (skip if you already have 'cocotalk.json' and 'cocotalk_label.h5')
-
+### Preprocessing 
+Preprocess the captions (skip if you already have 'cocotalk.json' and 'cocotalk_label.h5'):
 ```bash
 $ python scripts/prepro_labels.py --input_json data/dataset_coco.json --output_json data/cocotalk.json --output_h5 data/cocotalk
+```
+Preprocess for self-critical training:
+
+```
 $ python scripts/prepro_ngrams.py --input_json data/dataset_coco.json --dict_json data/cocotalk.json --output_pkl data/coco-train --split train
 ```
 
@@ -76,7 +83,7 @@ Third, finetune the  captioning model with cider+discriminability optimization:
 ### Evaluate
 
 ```bash
-$ bash eval.sh att_d1 test
+bash eval.sh att_d1 test
 ```
 
 ## Citation
