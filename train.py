@@ -160,15 +160,7 @@ def train(opt):
                             'dataset': opt.input_json}
             eval_kwargs.update(vars(opt))
             # Load the retrieval model for evaluation
-            if opt.evaluation_retrieval:
-                model.vse2 = copy.deepcopy(model.vse)
-                model.vse2.load_state_dict({k[4:]:v for k,v in torch.load(opt.evaluation_retrieval).items() if 'vse.' in k})
-                model.vse2.cuda()
-            else:
-                model.vse2 = model.vse
             val_loss, predictions, lang_stats = eval_utils.eval_split(model, loader, eval_kwargs)
-            if opt.evaluation_retrieval:
-                del model.vse2
 
             # Write validation result into summary
             if tf is not None:
