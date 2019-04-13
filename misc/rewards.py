@@ -7,7 +7,6 @@ import time
 import misc.utils as utils
 from collections import OrderedDict
 import torch
-from torch.autograd import Variable
 
 import sys
 sys.path.append("cider")

@@ -69,7 +69,7 @@ class CaptionModel(nn.Module):
                     #it.index_copy_(0, sample_ind, torch.multinomial(prob_prev, 1).view(-1))
                     prob_prev = torch.exp(outputs[-1].data) # fetch prev distribution: shape Nx(M+1)
                     it.index_copy_(0, sample_ind, torch.multinomial(prob_prev, 1).view(-1).index_select(0, sample_ind))
-                    it = Variable(it, requires_grad=False)
+                    it = it
             else:
                 it = seq[:, i].clone()          
             # break if all the sequences end
@@ -106,7 +106,7 @@ class CaptionModel(nn.Module):
             for t in range(self.seq_length + 1):
                 if t == 0: # input <bos>
                     it = fc_feats.data.new(beam_size).long().zero_()
-                    xt = self.embed(Variable(it, requires_grad=False))
+                    xt = self.embed(it)
                 else:
                     """pem a beam merge. that is,
                     for every previous beam we now many new possibilities to branch out
@@ -124,7 +124,7 @@ class CaptionModel(nn.Module):
                             # compute logprob of expanding beam q with word in (sorted) position c
                             local_logprob = ys[q,c]
                             candidate_logprob = beam_logprobs_sum[q] + local_logprob
-                            candidates.append({'c':ix.data[q,c], 'q':q, 'p':candidate_logprob.data[0], 'r':local_logprob.data[0]})
+                            candidates.append({'c':ix.data[q,c], 'q':q, 'p':candidate_logprob.item(), 'r':local_logprob.item()})
                     candidates = sorted(candidates, key=lambda x: -x['p'])
 
                     # construct new beams
@@ -160,7 +160,7 @@ class CaptionModel(nn.Module):
         
                     # encode as vectors
                     it = beam_seq[t-1]
-                    xt = self.embed(Variable(it.cuda()))
+                    xt = self.embed(it.cuda())
                 
                 if t >= 1:
                     state = new_state
@@ -199,10 +199,10 @@ class CaptionModel(nn.Module):
                     # scale logprobs by temperature
                     prob_prev = torch.exp(torch.div(logprobs.data, temperature)).cpu()
                 it = torch.multinomial(prob_prev, 1).cuda()
-                sampleLogprobs = logprobs.gather(1, Variable(it, requires_grad=False)) # gather the logprobs at sampled positions
+                sampleLogprobs = logprobs.gather(1, it) # gather the logprobs at sampled positions
                 it = it.view(-1).long() # and flatten indices for downstream processing
 
-            xt = self.embed(Variable(it, requires_grad=False))
+            xt = self.embed(it)
 
             if t >= 1:
                 # stop when all finished

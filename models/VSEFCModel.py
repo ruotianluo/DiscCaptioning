@@ -7,7 +7,6 @@ import torch.nn as nn
 import torch.nn.init
 import torch.nn.functional as F
 import torchvision.models as models
-from torch.autograd import Variable
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.backends.cudnn as cudnn
 from torch.nn.utils.clip_grad import clip_grad_norm
@@ -187,7 +186,7 @@ class ContrastiveLoss(nn.Module):
 
         # clear diagonals
         mask = torch.eye(scores.size(0)) > .5
-        I = Variable(mask)
+        I = mask
         if torch.cuda.is_available():
             I = I.cuda()
         cost_s = cost_s.masked_fill_(I, 0)
@@ -291,20 +290,20 @@ class VSEFCModel(nn.Module):
         if self.loss_type == 'contrastive':
             loss = self.contrastive_loss(img_emb, cap_emb, whole_batch, only_one_retrieval)
             if not whole_batch:
-                self._loss['contrastive'] = loss.data[0]
+                self._loss['contrastive'] = loss.item()
         elif self.loss_type == 'pair':
             img_emb_d = self.img_enc(fc_feats_d)
             loss = self.pair_loss(img_emb, img_emb_d, cap_emb, whole_batch, only_one_retrieval)
             if not whole_batch:
-                self._loss['pair'] = loss.data[0]
+                self._loss['pair'] = loss.item()
         else:
             img_emb_d = self.img_enc(fc_feats_d)
             loss_con = self.contrastive_loss(img_emb, cap_emb, whole_batch, only_one_retrieval) 
             loss_pair = self.pair_loss(img_emb, img_emb_d, cap_emb, whole_batch, only_one_retrieval)
             loss = (loss_con + loss_pair) / 2
             if not whole_batch:
-                self._loss['contrastive'] = loss_con.data[0]
-                self._loss['pair'] = loss_pair.data[0]
+                self._loss['contrastive'] = loss_con.item()
+                self._loss['pair'] = loss_pair.item()
 
         return loss
 

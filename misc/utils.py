@@ -7,7 +7,6 @@ import os
 import collections
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
 
 import skimage
 import skimage.io
@@ -37,7 +36,7 @@ def decode_sequence(ix_to_word, seq):
             if ix > 0 :
                 if j >= 1:
                     txt = txt + ' '
-                txt = txt + ix_to_word[str(ix)]
+                txt = txt + ix_to_word[str(ix.item())]
             else:
                 break
         out.append(txt)
@@ -107,21 +106,17 @@ def make_html(id, iteration):
         os.system('cp htmls/index.html htmls_'+id+'/')
     json.dump(output, open('htmls_'+id+'/result'+str(iteration)+'.json', 'w'))
 
-def var_wrapper(x, cuda=True, volatile=False):
+def var_wrapper(x, cuda=True):
     if type(x) is dict:
-        return {k: var_wrapper(v, cuda, volatile) for k,v in x.items()}
+        return {k: var_wrapper(v, cuda) for k,v in x.items()}
     if type(x) is list or type(x) is tuple:
-        return [var_wrapper(v, cuda, volatile) for v in x]
+        return [var_wrapper(v, cuda) for v in x]
     if isinstance(x, np.ndarray):
         x = torch.from_numpy(x)
     if cuda:
         x = x.cuda()
     else:
         x = x.cpu()
-    if torch.is_tensor(x):
-        x = Variable(x, volatile=volatile)
-    if isinstance(x, Variable) and volatile!=x.volatile:
-        x = Variable(x.data, volatile=volatile)
     return x
 
 def load_state_dict(model, state_dict):

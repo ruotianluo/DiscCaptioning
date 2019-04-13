@@ -6,7 +6,7 @@ This is the implementation of paper [**Discriminability objective for training d
 ## Requirements
 Python 2.7 (because there is no [coco-caption](https://github.com/tylin/coco-caption) version for python 3)
 
-PyTorch 0.3 (along with torchvision)
+PyTorch 1.0 (along with torchvision)
 
 java 1.8 for (coco-caption)
 

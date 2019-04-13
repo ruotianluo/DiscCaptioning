@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.init
 import torchvision.models as models
-from torch.autograd import Variable
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.backends.cudnn as cudnn
 from torch.nn.utils.clip_grad import clip_grad_norm
@@ -206,19 +205,19 @@ class VSEAttModel(nn.Module):
         if self.loss_type == 'contrastive':
             loss = self.contrastive_loss(img_emb, cap_emb, whole_batch)
             if not whole_batch:
-                self._loss['contrastive'] = loss.data[0]
+                self._loss['contrastive'] = loss.item()
         elif self.loss_type == 'pair':
             img_emb_d = self.img_enc(att_feats_d)
             loss = self.pair_loss(img_emb, img_emb_d, cap_emb, whole_batch)
             if not whole_batch:
-                self._loss['pair'] = loss.data[0]
+                self._loss['pair'] = loss.item()
         else:
             img_emb_d = self.img_enc(att_feats_d)
             loss_con = self.contrastive_loss(img_emb, cap_emb, whole_batch) 
             loss_pair = self.pair_loss(img_emb, img_emb_d, cap_emb, whole_batch)
             loss = (loss_con + loss_pair) / 2
             if not whole_batch:
-                self._loss['contrastive'] = loss_con.data[0]
-                self._loss['pair'] = loss_pair.data[0]
+                self._loss['contrastive'] = loss_con.item()
+                self._loss['pair'] = loss_pair.item()
 
         return loss

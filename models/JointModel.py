@@ -79,7 +79,8 @@ class JointModel(nn.Module):
                 if True:
                     retrieval_loss = self.vse(fc_feats, att_feats, _seqs, _masks, True, only_one_retrieval=self.only_one_retrieval)
                     if self.reinforce_baseline_type == 'greedy':
-                        _seqs_greedy, _sampleLogProbs_greedy = self.caption_generator.sample(*utils.var_wrapper([fc_feats, att_feats, att_masks],volatile=True), opt={'sample_max':1, 'temperature':1})
+                        with torch.no_grad():
+                            _seqs_greedy, _sampleLogProbs_greedy = self.caption_generator.sample(*utils.var_wrapper([fc_feats, att_feats, att_masks]), opt={'sample_max':1, 'temperature':1})
                         greedy_res = _seqs_greedy
                         # Do we need weights here???
                         if True: #not self.use_word_weights:
@@ -100,17 +101,18 @@ class JointModel(nn.Module):
 
                 loss += self.retrieval_reward_weight * sc_loss
 
-                self._loss['retrieval_sc_loss'] = sc_loss.data[0]
+                self._loss['retrieval_sc_loss'] = sc_loss.item()
 
-                self._loss['retrieval_loss'] = retrieval_loss.sum().data[0]
-                self._loss['retrieval_loss_greedy'] = baseline.sum().data[0] if isinstance(baseline, Variable) else baseline
+                self._loss['retrieval_loss'] = retrieval_loss.sum().item()
+                self._loss['retrieval_loss_greedy'] = baseline.sum().item() if isinstance(baseline, Variable) else baseline
 
         if self.cider_optimization:
             if 'gen_result' not in locals():
                 gen_result, sample_logprobs = self.caption_generator.sample(fc_feats, att_feats, att_masks, opt={'sample_max':0})
                 gen_masks = torch.cat([Variable(gen_result.data.new(gen_result.size(0), 2).fill_(1).float()), (gen_result > 0).float()[:, :-1]], 1)
             if 'greedy_res' not in locals():
-                greedy_res, _ =  self.caption_generator.sample(*utils.var_wrapper([fc_feats, att_feats, att_masks], volatile=True), opt={'sample_max':1})
+                with torch.no_grad():
+                    greedy_res, _ =  self.caption_generator.sample(*utils.var_wrapper([fc_feats, att_feats, att_masks]), opt={'sample_max':1})
             reward, cider_greedy = rewards.get_self_critical_reward(data, gen_result, greedy_res)
             self._loss['avg_reward'] = reward.mean()
             self._loss['cider_greedy'] = cider_greedy
@@ -119,9 +121,9 @@ class JointModel(nn.Module):
 
             loss += self.caption_loss_weight * loss_cap
 
-        self._loss['loss_cap'] = loss_cap.data[0]
-        self._loss['loss_vse'] = loss_vse.data[0]
-        self._loss['loss'] = loss.data[0]
+        self._loss['loss_cap'] = loss_cap.item()
+        self._loss['loss_vse'] = loss_vse.item()
+        self._loss['loss'] = loss.item()
 
         return loss
 

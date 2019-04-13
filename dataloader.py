@@ -208,6 +208,10 @@ class DataLoader(data.Dataset):
     def __len__(self):
         return len(self.info['images'])
 
+class ArraySampler(data.sampler.SubsetRandomSampler):
+    def __iter__(self):
+        return iter(self.indices)
+
 class BlobFetcher():
     """Experimental class for prefetching blobs in a separate process."""
     def __init__(self, split, dataloader, if_shuffle=False):
@@ -226,9 +230,11 @@ class BlobFetcher():
         2. wrapped: a new epoch, the split_ix and iterator have been updated in the get_minibatch_inds already.
         """
         # batch_size is 1, the merge is done in DataLoader class
+        sampler = ArraySampler(
+            self.dataloader.split_ix[self.split][self.dataloader.iterators[self.split]:])
         self.split_loader = iter(data.DataLoader(dataset=self.dataloader,
                                             batch_size=1,
-                                            sampler=self.dataloader.split_ix[self.split][self.dataloader.iterators[self.split]:],
+                                            sampler=sampler,
                                             shuffle=False,
                                             pin_memory=True,
                                             num_workers=4,#multiprocessing.cpu_count(),

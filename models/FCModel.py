@@ -120,7 +120,7 @@ class FCModel(nn.Module):
         output = torch.cat([_.unsqueeze(1) for _ in outputs[1:]], 1).contiguous()
         loss = self.crit(output, seq[:,1:], masks[:,1:])
 
-        self._loss['xe'] = loss.data[0]
+        self._loss['xe'] = loss.item()
 
         return loss
 
@@ -170,7 +170,7 @@ class FCModel(nn.Module):
                             # compute logprob of expanding beam q with word in (sorted) position c
                             local_logprob = ys[q,c]
                             candidate_logprob = beam_logprobs_sum[q] + local_logprob
-                            candidates.append({'c':ix.data[q,c], 'q':q, 'p':candidate_logprob.data[0], 'r':local_logprob.data[0]})
+                            candidates.append({'c':ix.data[q,c], 'q':q, 'p':candidate_logprob.item(), 'r':local_logprob.item()})
                     candidates = sorted(candidates, key=lambda x: -x['p'])
 
                     # construct new beams

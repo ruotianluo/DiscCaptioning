@@ -4,7 +4,6 @@ from __future__ import print_function
 
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
 
 import numpy as np
 import json
@@ -95,11 +94,12 @@ def eval_split(model, loader, eval_kwargs={}):
         if data.get('labels', None) is not None:
             # forward the model to get loss
             tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks']]
-            tmp = [Variable(torch.from_numpy(_), volatile=True).cuda() for _ in tmp]
+            tmp = [torch.from_numpy(_).cuda() for _ in tmp]
             fc_feats, att_feats, labels, masks, att_masks = tmp
 
-            loss = model(fc_feats, att_feats, att_masks, labels, masks, data)
-            loss = loss.data[0]
+            with torch.no_grad():
+                loss = model(fc_feats, att_feats, att_masks, labels, masks, data)
+            loss = loss.item()
             for k,v in model.loss().items():
                 if k not in losses:
                     losses[k] = 0
@@ -112,7 +112,7 @@ def eval_split(model, loader, eval_kwargs={}):
         tmp = [data['fc_feats'][np.arange(loader.batch_size) * loader.seq_per_img], 
             data['att_feats'][np.arange(loader.batch_size) * loader.seq_per_img],
             data['att_masks'][np.arange(loader.batch_size) * loader.seq_per_img]]
-        tmp = utils.var_wrapper(tmp, volatile=True)
+        tmp = utils.var_wrapper(tmp)
         fc_feats, att_feats, att_masks = tmp
         # forward the model to also get generated samples for each image
         seq, _ = model.sample(fc_feats, att_feats, att_masks, opt=eval_kwargs)
@@ -184,11 +184,12 @@ def encode_data(model, loader, eval_kwargs={}):
         n = n + loader.batch_size
 
         tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks']]
-        tmp = utils.var_wrapper(tmp, volatile=True)
+        tmp = utils.var_wrapper(tmp)
         fc_feats, att_feats, labels, masks = tmp
         
-        img_emb = model.vse.img_enc(fc_feats)
-        cap_emb = model.vse.txt_enc(labels, masks)
+        with torch.no_grad():
+            img_emb = model.vse.img_enc(fc_feats)
+            cap_emb = model.vse.txt_enc(labels, masks)
 
         # if we wrapped around the split or used up val imgs budget then bail
         ix0 = data['bounds']['it_pos_now']
