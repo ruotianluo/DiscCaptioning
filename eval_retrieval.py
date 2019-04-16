@@ -176,7 +176,9 @@ else:
 
 opt.id = opt.id + '_retrieval'
 
-result = eval_utils.evalrank(model, loader, vars(opt))
+kwargs = vars(opt)
+kwargs.udpate({'opt':opt})
+result = eval_utils.evalrank(model, loader, kwargs)
 
 json.dump(result, open('eval_results/'+opt.id+'_retreival_results.json', 'w'))
 

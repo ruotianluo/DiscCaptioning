@@ -14,6 +14,7 @@ import time
 import os
 import sys
 import misc.utils as utils
+from models.VSESCANModel import xattn_score_t2i, xattn_score_i2t
 
 def language_eval(dataset, preds, model_id, split):
     import sys
@@ -88,6 +89,8 @@ def eval_split(model, loader, eval_kwargs={}):
     loss_evals = 1e-8
     predictions = [] # Save the discriminative results. Used for further html visualization.
     while True:
+        if eval_kwargs.get('caption_loss_weight', 0) == 0:
+            break
         data = loader.get_batch(split)
         n = n + loader.batch_size
 
@@ -183,9 +186,9 @@ def encode_data(model, loader, eval_kwargs={}):
         data = loader.get_batch(split)
         n = n + loader.batch_size
 
-        tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks']]
+        tmp = [data['fc_feats'], data['labels'], data['masks']]
         tmp = utils.var_wrapper(tmp)
-        fc_feats, att_feats, labels, masks = tmp
+        fc_feats, labels, masks = tmp
         
         with torch.no_grad():
             img_emb = model.vse.img_enc(fc_feats)
@@ -221,8 +224,82 @@ def encode_data(model, loader, eval_kwargs={}):
 
     return img_embs, cap_embs
 
+def encode_data_att(model, loader, eval_kwargs={}):
+    num_images = eval_kwargs.get('num_images', eval_kwargs.get('val_images_use', -1))
+    split = eval_kwargs.get('split', 'val')
+    dataset = eval_kwargs.get('dataset', 'coco')
+
+    # Make sure in the evaluation mode
+    model.eval()
+
+    loader_seq_per_img = loader.seq_per_img
+    loader.seq_per_img = 5
+    loader.reset_iterator(split)
+
+    n = 0
+    img_embs = []
+    cap_embs = []
+    att_maskss = []
+    maskss = []
+    while True:
+        data = loader.get_batch(split)
+        n = n + loader.batch_size
+
+        tmp = [data['att_feats'], data['att_masks'], data['labels'], data['masks']]
+        tmp = utils.var_wrapper(tmp)
+        att_feats, att_masks, labels, masks = tmp
+        
+        def pad_dim1_to_100(t):
+            sp = list(t.shape)
+            sp[1] = 100 - sp[1]
+            _zeros = t.new_zeros(*sp)
+            return torch.cat([t, _zeros], 1)
+
+        with torch.no_grad():
+            img_emb = model.vse.img_enc(att_feats)
+            img_emb = pad_dim1_to_100(img_emb)
+            cap_emb = model.vse.txt_enc(labels, masks)
+            att_masks = pad_dim1_to_100(att_masks)
+
+        # if we wrapped around the split or used up val imgs budget then bail
+        ix0 = data['bounds']['it_pos_now']
+        ix1 = data['bounds']['it_max']
+        if num_images != -1:
+            ix1 = min(ix1, num_images)
+
+        if n > ix1:
+            img_emb = img_emb[:(ix1-n)*loader.seq_per_img]
+            cap_emb = cap_emb[:(ix1-n)*loader.seq_per_img]
+            att_masks = att_masks[:(ix1-n)*loader.seq_per_img]
+            masks = masks[:(ix1-n)*loader.seq_per_img]
+
+        # preserve the embeddings by copying from gpu and converting to np
+        img_embs.append(img_emb.data.cpu().numpy().copy())
+        cap_embs.append(cap_emb.data.cpu().numpy().copy())
+        att_maskss.append(att_masks.data.cpu().numpy().copy())
+        maskss.append(masks.data.cpu().numpy().copy())
+
+        if data['bounds']['wrapped']:
+            break
+        if num_images >= 0 and n >= num_images:
+            break
+
+        print("%d/%d"%(n,ix1))
+
+    img_embs = np.vstack(img_embs)
+    cap_embs = np.vstack(cap_embs)
+    att_masks = np.vstack(att_maskss)
+    masks = np.vstack(maskss)
+
+    assert img_embs.shape[0] == ix1 * loader.seq_per_img
+
+    loader.seq_per_img = loader_seq_per_img 
+
+    return img_embs, cap_embs, att_masks, masks
 
 def evalrank(model, loader, eval_kwargs={}):
+    if eval_kwargs.get('vse_model', '') == 'scan':
+        return evalrank_att(model, loader, eval_kwargs)
     num_images = eval_kwargs.get('num_images', eval_kwargs.get('val_images_use', -1))
     split = eval_kwargs.get('split', 'val')
     dataset = eval_kwargs.get('dataset', 'coco')
@@ -286,6 +363,215 @@ def evalrank(model, loader, eval_kwargs={}):
     return {'rsum':rsum, 'i2t_ar':ar, 't2i_ar':ari,
             'i2t_r1':r[0], 'i2t_r5':r[1], 'i2t_r10':r[2], 'i2t_medr':r[3], 'i2t_meanr':r[4],
             't2i_r1':ri[0], 't2i_r5':ri[1], 't2i_r10':ri[2], 't2i_medr':ri[3], 't2i_meanr':ri[4]}#{'rt': rt, 'rti': rti}
+
+def evalrank_att(model, loader, eval_kwargs={}):
+    num_images = eval_kwargs.get('num_images', eval_kwargs.get('val_images_use', -1))
+    split = eval_kwargs.get('split', 'val')
+    dataset = eval_kwargs.get('dataset', 'coco')
+    fold5 = eval_kwargs.get('fold5', 0)
+    opt = eval_kwargs.get('opt', None)
+    """
+    Evaluate a trained model on either dev or test. If `fold5=True`, 5 fold
+    cross-validation is done (only for MSCOCO). Otherwise, the full data is
+    used for evaluation.
+    """
+    print('Computing results...')
+    img_embs, cap_embs, att_masks, masks = encode_data_att(model, loader, eval_kwargs)
+    print('Images: %d, Captions: %d' %
+          (img_embs.shape[0] / 5, cap_embs.shape[0]))
+
+    if not fold5:
+        # no cross-validation, full evaluation
+        img_embs = np.array([img_embs[i] for i in range(0, len(img_embs), 5)])
+        att_masks = np.array([att_masks[i] for i in range(0, len(att_masks), 5)])
+        start = time.time()
+        # if opt.cross_attn == 't2i':
+        #     sims = shard_xattn_t2i(img_embs, att_masks, cap_embs, cap_masks, opt, shard_size=128)
+        # elif opt.cross_attn == 'i2t':
+        if True:
+            sims = shard_xattn_i2t(img_embs, att_masks, cap_embs, masks, opt, shard_size=128)
+        else:
+            raise NotImplementedError
+        end = time.time()
+        print("calculate similarity time:", end-start)
+
+        r, rt = i2t_att(img_embs, cap_embs, masks, sims, return_ranks=True)
+        ri, rti = t2i_att(img_embs, cap_embs, masks, sims, return_ranks=True)
+        ar = (r[0] + r[1] + r[2]) / 3
+        ari = (ri[0] + ri[1] + ri[2]) / 3
+        rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
+        print("rsum: %.1f" % rsum)
+        print("Average i2t Recall: %.1f" % ar)
+        print("Image to text: %.1f %.1f %.1f %.1f %.1f" % r)
+        print("Average t2i Recall: %.1f" % ari)
+        print("Text to image: %.1f %.1f %.1f %.1f %.1f" % ri)
+    else:
+        # 5fold cross-validation, only for MSCOCO
+        results = []
+        for i in range(5):
+            img_embs_shard = img_embs[i * 5000:(i + 1) * 5000:5]
+            att_masks_shard = att_masks[i * 5000:(i + 1) * 5000:5]
+            cap_embs_shard = cap_embs[i * 5000:(i + 1) * 5000]
+            masks_shard = masks[i * 5000:(i + 1) * 5000]
+            start = time.time()
+            # if opt.cross_attn == 't2i':
+            #     sims = shard_xattn_t2i(img_embs_shard, cap_embs_shard, cap_lens_shard, opt, shard_size=128)
+            # elif opt.cross_attn == 'i2t':
+            if True:
+                sims = shard_xattn_i2t(img_embs_shard, att_masks_shard, cap_embs_shard, masks_shard, opt, shard_size=128)
+            else:
+                raise NotImplementedError
+            end = time.time()
+            print("calculate similarity time:", end-start)
+
+            r, rt0 = i2t_att(img_embs_shard, cap_embs_shard, masks_shard, sims, return_ranks=True)
+            print("Image to text: %.1f, %.1f, %.1f, %.1f, %.1f" % r)
+            ri, rti0 = t2i_att(img_embs_shard, cap_embs_shard, masks_shard, sims, return_ranks=True)
+            print("Text to image: %.1f, %.1f, %.1f, %.1f, %.1f" % ri)
+            if i == 0:
+                rt, rti = rt0, rti0
+            ar = (r[0] + r[1] + r[2]) / 3
+            ari = (ri[0] + ri[1] + ri[2]) / 3
+            rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
+            print("rsum: %.1f ar: %.1f ari: %.1f" % (rsum, ar, ari))
+            results += [list(r) + list(ri) + [ar, ari, rsum]]
+
+        print("-----------------------------------")
+        print("Mean metrics: ")
+        mean_metrics = tuple(np.array(results).mean(axis=0).flatten())
+        print("rsum: %.1f" % (mean_metrics[10] * 6))
+        print("Average i2t Recall: %.1f" % mean_metrics[11])
+        print("Image to text: %.1f %.1f %.1f %.1f %.1f" %
+              mean_metrics[:5])
+        print("Average t2i Recall: %.1f" % mean_metrics[12])
+        print("Text to image: %.1f %.1f %.1f %.1f %.1f" %
+              mean_metrics[5:10])
+
+    return {'rsum':rsum, 'i2t_ar':ar, 't2i_ar':ari,
+            'i2t_r1':r[0], 'i2t_r5':r[1], 'i2t_r10':r[2], 'i2t_medr':r[3], 'i2t_meanr':r[4],
+            't2i_r1':ri[0], 't2i_r5':ri[1], 't2i_r10':ri[2], 't2i_medr':ri[3], 't2i_meanr':ri[4]}#{'rt': rt, 'rti': rti}
+
+
+def i2t_att(images, captions, cap_masks, sims, npts=None, return_ranks=False):
+    """
+    Images->Text (Image Annotation)
+    Images: (N, n_region, d) matrix of images
+    Captions: (5N, max_n_word, d) matrix of captions
+    CapLens: (5N) array of caption lengths
+    sims: (N, 5N) matrix of similarity im-cap
+    """
+    npts = images.shape[0]
+    ranks = np.zeros(npts)
+    top1 = np.zeros(npts)
+    for index in range(npts):
+        inds = np.argsort(sims[index])[::-1]
+        # Score
+        rank = 1e20
+        for i in range(5 * index, 5 * index + 5, 1):
+            tmp = np.where(inds == i)[0][0]
+            if tmp < rank:
+                rank = tmp
+        ranks[index] = rank
+        top1[index] = inds[0]
+
+    # Compute metrics
+    r1 = 100.0 * len(np.where(ranks < 1)[0]) / len(ranks)
+    r5 = 100.0 * len(np.where(ranks < 5)[0]) / len(ranks)
+    r10 = 100.0 * len(np.where(ranks < 10)[0]) / len(ranks)
+    medr = np.floor(np.median(ranks)) + 1
+    meanr = ranks.mean() + 1
+    if return_ranks:
+        return (r1, r5, r10, medr, meanr), (ranks, top1)
+    else:
+        return (r1, r5, r10, medr, meanr)
+
+
+def t2i_att(images, captions, cap_masks, sims, npts=None, return_ranks=False):
+    """
+    Text->Images (Image Search)
+    Images: (N, n_region, d) matrix of images
+    Captions: (5N, max_n_word, d) matrix of captions
+    CapLens: (5N) array of caption lengths
+    sims: (N, 5N) matrix of similarity im-cap
+    """
+    npts = images.shape[0]
+    ranks = np.zeros(5 * npts)
+    top1 = np.zeros(5 * npts)
+
+    # --> (5N(caption), N(image))
+    sims = sims.T
+
+    for index in range(npts):
+        for i in range(5):
+            inds = np.argsort(sims[5 * index + i])[::-1]
+            ranks[5 * index + i] = np.where(inds == index)[0][0]
+            top1[5 * index + i] = inds[0]
+
+    # Compute metrics
+    r1 = 100.0 * len(np.where(ranks < 1)[0]) / len(ranks)
+    r5 = 100.0 * len(np.where(ranks < 5)[0]) / len(ranks)
+    r10 = 100.0 * len(np.where(ranks < 10)[0]) / len(ranks)
+    medr = np.floor(np.median(ranks)) + 1
+    meanr = ranks.mean() + 1
+    if return_ranks:
+        return (r1, r5, r10, medr, meanr), (ranks, top1)
+    else:
+        return (r1, r5, r10, medr, meanr)
+
+def crop_by_max_length(t, mask):
+    l = mask.long().sum(1).max().item()
+    return t[:, :l], mask[:, :l]
+
+def shard_xattn_t2i(images, img_masks, captions, cap_masks, opt, shard_size=128):
+    """
+    Computer pairwise t2i image-caption distance with locality sharding
+    """
+    n_im_shard = (len(images)-1)//shard_size + 1
+    n_cap_shard = (len(captions)-1)//shard_size + 1
+    
+    d = np.zeros((len(images), len(captions)))
+    for i in range(n_im_shard):
+        im_start, im_end = shard_size*i, min(shard_size*(i+1), len(images))
+        for j in range(n_cap_shard):
+            sys.stdout.write('\r>> shard_xattn_t2i batch (%d,%d)' % (i,j))
+            cap_start, cap_end = shard_size*j, min(shard_size*(j+1), len(captions))
+            im = torch.from_numpy(images[im_start:im_end]).cuda()
+            im_l = torch.from_numpy(img_masks[im_start:im_end]).cuda()
+            s = torch.from_numpy(captions[cap_start:cap_end]).cuda()
+            l = torch.from_numpy(cap_masks[cap_start:cap_end]).cuda()
+            im, im_l = crop_by_max_length(im, im_l)
+            s, l = crop_by_max_length(s, l)
+            with torch.no_grad():
+                sim = xattn_score_t2i(im, im_l, s, l, opt)
+            d[im_start:im_end, cap_start:cap_end] = sim.data.cpu().numpy()
+    sys.stdout.write('\n')
+    return d
+
+
+def shard_xattn_i2t(images, img_masks, captions, cap_masks, opt, shard_size=128):
+    """
+    Computer pairwise i2t image-caption distance with locality sharding
+    """
+    n_im_shard = (len(images)-1)//shard_size + 1
+    n_cap_shard = (len(captions)-1)//shard_size + 1
+    
+    d = np.zeros((len(images), len(captions)))
+    for i in range(n_im_shard):
+        im_start, im_end = shard_size*i, min(shard_size*(i+1), len(images))
+        for j in range(n_cap_shard):
+            sys.stdout.write('\r>> shard_xattn_i2t batch (%d,%d)' % (i,j))
+            cap_start, cap_end = shard_size*j, min(shard_size*(j+1), len(captions))
+            im = torch.from_numpy(images[im_start:im_end]).cuda()
+            im_l = torch.from_numpy(img_masks[im_start:im_end]).cuda()
+            s = torch.from_numpy(captions[cap_start:cap_end]).cuda()
+            l = torch.from_numpy(cap_masks[cap_start:cap_end]).cuda()
+            im, im_l = crop_by_max_length(im, im_l)
+            s, l = crop_by_max_length(s, l)
+            with torch.no_grad():
+                sim = xattn_score_i2t(im, im_l, s, l, opt)
+            d[im_start:im_end, cap_start:cap_end] = sim.data.cpu().numpy()
+    sys.stdout.write('\n')
+    return d
 
 
 def i2t(images, captions, npts=None, measure='cosine', return_ranks=False):

@@ -20,6 +20,7 @@ import eval_utils
 import misc.utils as utils
 import copy
 from misc.rewards import init_scorer
+from torch.nn.utils.clip_grad import clip_grad_norm_
 
 try:
     import tensorflow as tf
@@ -120,7 +121,10 @@ def train(opt):
         
         loss = model(fc_feats, att_feats, att_masks, labels, masks, data)
         loss.backward()
-        utils.clip_gradient(optimizer, opt.grad_clip)
+        if opt.grad_clip_norm > 0:
+            clip_grad_norm_(model.parameters(), opt.grad_clip_norm)
+        else:
+            utils.clip_gradient(optimizer, opt.grad_clip)
         optimizer.step()
         train_loss = loss.item()
         torch.cuda.synchronize()
@@ -159,6 +163,7 @@ def train(opt):
             eval_kwargs = {'split': 'val',
                             'dataset': opt.input_json}
             eval_kwargs.update(vars(opt))
+            eval_kwargs.update({'opt': opt})
             # Load the retrieval model for evaluation
             val_loss, predictions, lang_stats = eval_utils.eval_split(model, loader, eval_kwargs)
 
@@ -179,7 +184,10 @@ def train(opt):
             if opt.language_eval == 1:
                 current_score = lang_stats['SPICE']*100
             else:
-                current_score = - val_loss['loss_cap']
+                if opt.caption_loss_weight == 0:
+                    current_score = val_loss['rsum']
+                else:
+                    current_score = - val_loss['loss_cap']
             current_score_vse = val_loss.get(opt.vse_eval_criterion, 0)*100
 
             best_flag = False

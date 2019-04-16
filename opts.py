@@ -59,6 +59,8 @@ def parse_opt():
                     help='minibatch size')
     parser.add_argument('--grad_clip', type=float, default=0.1, #5.,
                     help='clip gradients at this value')
+    parser.add_argument('--grad_clip_norm', type=float, default=0, #5.,
+                    help='clip gradients at this value')
     parser.add_argument('--drop_prob_lm', type=float, default=0.5,
                     help='strength of dropout in the Language Model RNN')
     parser.add_argument('--seq_per_img', type=int, default=1,
@@ -140,6 +142,8 @@ def parse_opt():
                     help='rnn, gru, or lstm')
     parser.add_argument('--vse_margin', default=0.2, type=float,
                     help='Rank loss margin; when margin is -1, it means use binary cross entropy (usually works with MLP).')
+    parser.add_argument('--vse_word_dim', default=300, type=int,
+                    help='Dimensionality of word embedding.')
     parser.add_argument('--vse_embed_size', default=1024, type=int,
                     help='Dimensionality of the joint embedding.')
     parser.add_argument('--vse_num_layers', default=1, type=int,

@@ -20,6 +20,7 @@ from .AttModel import *
 
 from .VSEFCModel import VSEFCModel
 from .VSEAttModel import VSEAttModel
+from .VSESCANModel import VSESCANModel
 
 __all__ = ['setup', 'load', 'JointModel']
 
@@ -59,6 +60,8 @@ def setup(opt, model_name, caption = True):
             model = VSEFCModel(opt)
         elif model_name == 'dual_att':
             model = VSEAttModel(opt)
+        elif model_name == 'scan':
+            model = VSESCANModel(opt)
         else:
             raise Exception("VSE model not supported: {}".format(model_name))
 

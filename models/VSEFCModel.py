@@ -65,7 +65,7 @@ class EncoderText(nn.Module):
     def __init__(self, opt):
         super(EncoderText, self).__init__()
         self.use_abs = opt.vse_use_abs
-        self.input_encoding_size = opt.input_encoding_size
+        self.word_dim = opt.vse_word_dim
         self.embed_size = opt.vse_embed_size
         self.num_layers = opt.vse_num_layers
         self.rnn_type = opt.vse_rnn_type
@@ -73,10 +73,10 @@ class EncoderText(nn.Module):
         self.use_abs = opt.vse_use_abs
         self.pool_type = getattr(opt, 'vse_pool_type', '')
         # word embedding
-        self.embed = nn.Embedding(self.vocab_size + 2, self.input_encoding_size)
+        self.embed = nn.Embedding(self.vocab_size + 2, self.word_dim)
 
         # caption embedding
-        self.rnn = getattr(nn, self.rnn_type.upper())(self.input_encoding_size, self.embed_size, self.num_layers, batch_first=True)
+        self.rnn = getattr(nn, self.rnn_type.upper())(self.word_dim, self.embed_size, self.num_layers, batch_first=True)
 
         self.init_weights()
 
@@ -282,7 +282,7 @@ class VSEFCModel(nn.Module):
 
         self._loss = {}
 
-    def forward(self, fc_feats, att_feats, seq, masks, whole_batch=False, only_one_retrieval='off'):
+    def forward(self, fc_feats, att_feats, att_masks, seq, masks, whole_batch=False, only_one_retrieval='off'):
 
         img_emb = self.img_enc(fc_feats)
         cap_emb = self.txt_enc(seq, masks)

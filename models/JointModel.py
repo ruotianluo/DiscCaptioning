@@ -20,6 +20,7 @@ class JointModel(nn.Module):
             self.share_embed = opt.share_embed
             self.share_fc = opt.share_fc
             if self.share_embed:
+                assert opt.vse_word_dim == opt.input_encoding_size
                 self.vse.txt_enc.embed = self.caption_generator.embed
             if self.share_fc:
                 assert self.vse.embed_size == self.caption_generator.input_encoding_size
@@ -28,7 +29,7 @@ class JointModel(nn.Module):
                 else:
                     self.vse.img_enc.fc = self.caption_generator.att_embed
         else:
-            self.vse = lambda x,y,z,w,u: Variable(torch.zeros(1)).cuda()
+            self.vse = lambda x,y,z,zz,w,u: Variable(torch.zeros(1)).cuda()
 
         if opt.vse_loss_weight == 0 and isinstance(self.vse, nn.Module):
             for p in self.vse.parameters():
@@ -60,7 +61,7 @@ class JointModel(nn.Module):
         else:
             loss_cap = Variable(torch.cuda.FloatTensor([0]))
         if self.vse_loss_weight > 0:
-            loss_vse = self.vse(fc_feats, att_feats, seq, masks,only_one_retrieval=self.only_one_retrieval)
+            loss_vse = self.vse(fc_feats, att_feats, att_masks, seq, masks,only_one_retrieval=self.only_one_retrieval)
         else:
             loss_vse = Variable(torch.cuda.FloatTensor([0]))
 
