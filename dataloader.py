@@ -166,8 +166,6 @@ class DataLoader(data.Dataset):
             att_feats = np.zeros([len(att_batch)*times, max_att_len, att_batch[0].shape[1]], dtype = 'float32')
             for i in range(len(att_batch)):
                 att_feats[i*times:(i+1)*times, :att_batch[i].shape[0]] = att_batch[i]
-            for i in range(len(att_batch)):
-                att_feats[i][:att_batch[i].shape[0]] = att_batch[i]
             att_masks = np.zeros(att_feats.shape[:2], dtype='float32')
             for i in range(len(att_batch)):
                 att_masks[i*times:(i+1)*times, :att_batch[i].shape[0]] = 1
