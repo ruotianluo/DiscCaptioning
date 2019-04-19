@@ -120,7 +120,7 @@ class EncoderText(nn.Module):
         out, _ = self.rnn(seqs_pack)
 
         # Reshape *final* output to (batch_size, hidden_size)
-        padded = pad_packed_sequence(out, batch_first=True)
+        padded = pad_packed_sequence(out, batch_first=True, total_length=masks.shape[1])
         I = sorted_lens.view(-1,1,1).expand(seqs.size(0), 1, self.embed_size) - 1
         out = padded[0]
         # out = padded[0].gather(1, I).squeeze(1)
