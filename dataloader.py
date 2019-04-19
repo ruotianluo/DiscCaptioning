@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import json
 import h5py
+import lmdb
 import os
 import numpy as np
 import random
@@ -15,6 +16,45 @@ import multiprocessing
 
 import glob
 import cPickle
+import six
+
+class HybridLoader:
+    """
+    If db_path is a director, then use normal file loading
+    If lmdb, then load from lmdb
+    The loading method depend on extention.
+    """
+    def __init__(self, db_path, ext):
+        self.db_path = db_path
+        self.ext = ext
+        if self.ext == '.npy':
+            self.loader = lambda x: np.load(x)
+        else:
+            self.loader = lambda x: np.load(x)['feat']
+        if db_path.endswith('.lmdb'):
+            self.db_type = 'lmdb'
+            self.env = lmdb.open(db_path, subdir=os.path.isdir(db_path),
+                                readonly=True, lock=False,
+                                readahead=False, meminit=False)
+        else:
+            self.db_type = 'dir'
+    
+    def get(self, key):
+
+        if self.db_type == 'lmdb':
+            env = self.env
+            with env.begin(write=False) as txn:
+                byteflow = txn.get(key)
+            f_input = six.BytesIO(byteflow)
+        else:
+            f_input = os.path.join(self.db_path, key + self.ext)
+
+        # load image
+        feat = self.loader(f_input)
+
+        return feat
+
+
 
 class DataLoader(data.Dataset):
 
@@ -50,8 +90,8 @@ class DataLoader(data.Dataset):
         print('DataLoader loading h5 file: ', opt.input_fc_dir, opt.input_att_dir, opt.input_label_h5)
         self.h5_label_file = h5py.File(self.opt.input_label_h5, 'r', driver='core')
 
-        self.input_fc_dir = self.opt.input_fc_dir
-        self.input_att_dir = self.opt.input_att_dir
+        self.fc_loader = HybridLoader(self.opt.input_fc_dir, '.npy')
+        self.att_loader = HybridLoader(self.opt.input_att_dir, '.npz')
 
         # load in the sequence data
         seq_size = self.h5_label_file['labels'].shape
@@ -196,12 +236,12 @@ class DataLoader(data.Dataset):
         ix = index
 
         if self.use_att:
-            att_feat = np.load(os.path.join(self.input_att_dir, str(self.info['images'][ix]['id']) + '.npz'))['feat']
+            att_feat = self.att_loader.get(str(self.info['images'][ix]['id']))
             if att_feat.ndim == 3:
                 att_feat = att_feat.reshape(-1, att_feat.shape[-1])
-            return (np.load(os.path.join(self.input_fc_dir, str(self.info['images'][ix]['id']) + '.npy')), att_feat, ix)
+            return (self.fc_loader.get(str(self.info['images'][ix]['id'])), att_feat, ix)
         else:
-            return (np.load(os.path.join(self.input_fc_dir, str(self.info['images'][ix]['id']) + '.npy')), np.zeros((1,1)), ix)
+            return (self.fc_loader.get(str(self.info['images'][ix]['id'])), np.zeros((1,1)), ix)
 
     def __len__(self):
         return len(self.info['images'])
