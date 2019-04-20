@@ -176,7 +176,7 @@ def encode_data(model, loader, eval_kwargs={}):
     model.eval()
 
     loader_seq_per_img = loader.seq_per_img
-    loader.seq_per_img = 5
+    loader.seq_per_img = 1
     loader.reset_iterator(split)
 
     n = 0
@@ -233,7 +233,7 @@ def encode_data_att(model, loader, eval_kwargs={}):
     model.eval()
 
     loader_seq_per_img = loader.seq_per_img
-    loader.seq_per_img = 5
+    loader.seq_per_img = 1
     loader.reset_iterator(split)
 
     n = 0
@@ -312,7 +312,7 @@ def evalrank(model, loader, eval_kwargs={}):
     print('Computing results...')
     img_embs, cap_embs = encode_data(model, loader, eval_kwargs)
     print('Images: %d, Captions: %d' %
-          (img_embs.shape[0] / 5, cap_embs.shape[0]))
+          (img_embs.shape[0], cap_embs.shape[0]))
 
     if not fold5:
         # no cross-validation, full evaluation
@@ -378,12 +378,12 @@ def evalrank_att(model, loader, eval_kwargs={}):
     print('Computing results...')
     img_embs, cap_embs, att_masks, masks = encode_data_att(model, loader, eval_kwargs)
     print('Images: %d, Captions: %d' %
-          (img_embs.shape[0] / 5, cap_embs.shape[0]))
+          (img_embs.shape[0], cap_embs.shape[0]))
 
     if not fold5:
         # no cross-validation, full evaluation
-        img_embs = np.array([img_embs[i] for i in range(0, len(img_embs), 5)])
-        att_masks = np.array([att_masks[i] for i in range(0, len(att_masks), 5)])
+        img_embs = np.array([img_embs[i] for i in range(0, len(img_embs))])
+        att_masks = np.array([att_masks[i] for i in range(0, len(att_masks))])
         start = time.time()
         # if opt.cross_attn == 't2i':
         #     sims = shard_xattn_t2i(img_embs, att_masks, cap_embs, cap_masks, opt, shard_size=128)
@@ -467,7 +467,7 @@ def i2t_att(images, captions, cap_masks, sims, npts=None, return_ranks=False):
         inds = np.argsort(sims[index])[::-1]
         # Score
         rank = 1e20
-        for i in range(5 * index, 5 * index + 5, 1):
+        for i in range(index, index + 1, 1):
             tmp = np.where(inds == i)[0][0]
             if tmp < rank:
                 rank = tmp
@@ -495,17 +495,17 @@ def t2i_att(images, captions, cap_masks, sims, npts=None, return_ranks=False):
     sims: (N, 5N) matrix of similarity im-cap
     """
     npts = images.shape[0]
-    ranks = np.zeros(5 * npts)
-    top1 = np.zeros(5 * npts)
+    ranks = np.zeros(npts)
+    top1 = np.zeros(npts)
 
     # --> (5N(caption), N(image))
     sims = sims.T
 
     for index in range(npts):
-        for i in range(5):
-            inds = np.argsort(sims[5 * index + i])[::-1]
-            ranks[5 * index + i] = np.where(inds == index)[0][0]
-            top1[5 * index + i] = inds[0]
+        for i in range(1):
+            inds = np.argsort(sims[1 * index + i])[::-1]
+            ranks[1 * index + i] = np.where(inds == index)[0][0]
+            top1[1 * index + i] = inds[0]
 
     # Compute metrics
     r1 = 100.0 * len(np.where(ranks < 1)[0]) / len(ranks)
@@ -581,7 +581,7 @@ def i2t(images, captions, npts=None, measure='cosine', return_ranks=False):
     Captions: (5N, K) matrix of captions
     """
     if npts is None:
-        npts = images.shape[0] // 5
+        npts = images.shape[0]
     index_list = []
 
     ranks = np.zeros(npts)
@@ -589,14 +589,14 @@ def i2t(images, captions, npts=None, measure='cosine', return_ranks=False):
     for index in range(npts):
 
         # Get query image
-        im = images[5 * index].reshape(1, images.shape[1])
+        im = images[index].reshape(1, images.shape[1])
 
         # Compute scores
         if measure == 'order':
             bs = 100
             if index % bs == 0:
-                mx = min(images.shape[0], 5 * (index + bs))
-                im2 = images[5 * index:mx:5]
+                mx = min(images.shape[0], (index + bs))
+                im2 = images[index:mx]
                 d2 = order_sim(torch.Tensor(im2).cuda(),
                                torch.Tensor(captions).cuda())
                 d2 = d2.cpu().numpy()
@@ -608,7 +608,7 @@ def i2t(images, captions, npts=None, measure='cosine', return_ranks=False):
 
         # Score
         rank = 1e20
-        for i in range(5 * index, 5 * index + 5, 1):
+        for i in range(index, index + 1, 1):
             tmp = np.where(inds == i)[0][0]
             if tmp < rank:
                 rank = tmp
@@ -634,34 +634,34 @@ def t2i(images, captions, npts=None, measure='cosine', return_ranks=False):
     Captions: (5N, K) matrix of captions
     """
     if npts is None:
-        npts = images.shape[0] // 5
-    ims = np.array([images[i] for i in range(0, len(images), 5)])
+        npts = images.shape[0]
+    ims = np.array([images[i] for i in range(0, len(images))])
 
-    ranks = np.zeros(5 * npts)
-    top1 = np.zeros(5 * npts)
+    ranks = np.zeros(npts)
+    top1 = np.zeros(npts)
     for index in range(npts):
 
         # Get query captions
-        queries = captions[5 * index:5 * index + 5]
+        queries = captions[index:index + 1]
 
         # Compute scores
         if measure == 'order':
             bs = 100
-            if 5 * index % bs == 0:
-                mx = min(captions.shape[0], 5 * index + bs)
-                q2 = captions[5 * index:mx]
+            if index % bs == 0:
+                mx = min(captions.shape[0], index + bs)
+                q2 = captions[index:mx]
                 d2 = order_sim(torch.Tensor(ims).cuda(),
                                torch.Tensor(q2).cuda())
                 d2 = d2.cpu().numpy()
 
-            d = d2[:, (5 * index) % bs:(5 * index) % bs + 5].T
+            d = d2[:, (index) % bs:(index) % bs + 1].T
         else:
             d = np.dot(queries, ims.T)
         inds = np.zeros(d.shape)
         for i in range(len(inds)):
             inds[i] = np.argsort(d[i])[::-1]
-            ranks[5 * index + i] = np.where(inds[i] == index)[0][0]
-            top1[5 * index + i] = inds[i][0]
+            ranks[index + i] = np.where(inds[i] == index)[0][0]
+            top1[index + i] = inds[i][0]
 
     # Compute metrics
     r1 = 100.0 * len(np.where(ranks < 1)[0]) / len(ranks)
