@@ -50,7 +50,11 @@ class HybridLoader:
             f_input = os.path.join(self.db_path, key + self.ext)
 
         # load image
-        feat = self.loader(f_input)
+        try:
+            feat = self.loader(f_input)
+        except:
+            print(key)
+            feat = self.loader(f_input)
 
         return feat
 

@@ -253,7 +253,7 @@ def train(opt):
             # Stop if reaching max epochs
             if epoch >= opt.max_epochs and opt.max_epochs != -1:
                 break
-    except (RuntimeError, KeyboardInterrupt):
+    except:# (RuntimeError, KeyboardInterrupt):
         print('Save ckpt on exception ...')
         save_checkpoint(model, infos, optimizer)
         print('Save ckpt done.')
