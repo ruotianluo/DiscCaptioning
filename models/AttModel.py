@@ -471,7 +471,7 @@ class TopDownCore(nn.Module):
         self.lang_lstm = nn.LSTMCell(opt.rnn_size * 2, opt.rnn_size) # h^1_t, \hat v
         self.attention = Attention(opt)
 
-    def forward(self, xt, fc_feats, att_feats, p_att_feats, state, att_masks):
+    def forward(self, xt, fc_feats, att_feats, p_att_feats, att_masks, state):
         prev_h = state[0][-1]
         att_lstm_input = torch.cat([prev_h, fc_feats, xt], 1)
 
